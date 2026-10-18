@@ -1,0 +1,53 @@
+[project]
+name = "open-data-mcp"
+version = "0.1.0"
+description = "MCP server and reference agent for answering questions about Ukrainian open data with provenance."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "anthropic>=0.40",
+    "duckdb>=1.1",
+    "httpx>=0.27",
+    "mcp>=1.2",
+    "sqlglot>=25",
+]
+
+[project.scripts]
+open-data-mcp = "open_data_mcp.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+# Ukrainian text is the domain of this project: Cyrillic look-alike letters are intentional.
+ignore = ["RUF001", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Table of one-line SQL gold queries; wrapping them would hurt readability.
+"evals/make_fixture.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]

@@ -1,0 +1,146 @@
+[
+ {
+  "region": "Region A",
+  "year": 2021,
+  "planned_uah": 431000000,
+  "executed_uah": 446932492
+ },
+ {
+  "region": "Region A",
+  "year": 2022,
+  "planned_uah": 504000000,
+  "executed_uah": 485217743
+ },
+ {
+  "region": "Region A",
+  "year": 2023,
+  "planned_uah": 174000000,
+  "executed_uah": 174925431
+ },
+ {
+  "region": "Region A",
+  "year": 2024,
+  "planned_uah": 196000000,
+  "executed_uah": 174718756
+ },
+ {
+  "region": "Region B",
+  "year": 2021,
+  "planned_uah": 159000000,
+  "executed_uah": 163360736
+ },
+ {
+  "region": "Region B",
+  "year": 2022,
+  "planned_uah": 319000000,
+  "executed_uah": 258190278
+ },
+ {
+  "region": "Region B",
+  "year": 2023,
+  "planned_uah": 544000000,
+  "executed_uah": 492071412
+ },
+ {
+  "region": "Region B",
+  "year": 2024,
+  "planned_uah": 346000000,
+  "executed_uah": 284646675
+ },
+ {
+  "region": "Region C",
+  "year": 2021,
+  "planned_uah": 534000000,
+  "executed_uah": 435091252
+ },
+ {
+  "region": "Region C",
+  "year": 2022,
+  "planned_uah": 679000000,
+  "executed_uah": 564215382
+ },
+ {
+  "region": "Region C",
+  "year": 2023,
+  "planned_uah": 328000000,
+  "executed_uah": 314111325
+ },
+ {
+  "region": "Region C",
+  "year": 2024,
+  "planned_uah": 696000000,
+  "executed_uah": 721701355
+ },
+ {
+  "region": "Region D",
+  "year": 2021,
+  "planned_uah": 690000000,
+  "executed_uah": 653005895
+ },
+ {
+  "region": "Region D",
+  "year": 2022,
+  "planned_uah": 150000000,
+  "executed_uah": 156609566
+ },
+ {
+  "region": "Region D",
+  "year": 2023,
+  "planned_uah": 147000000,
+  "executed_uah": 138057434
+ },
+ {
+  "region": "Region D",
+  "year": 2024,
+  "planned_uah": 236000000,
+  "executed_uah": 205886947
+ },
+ {
+  "region": "Region E",
+  "year": 2021,
+  "planned_uah": 247000000,
+  "executed_uah": 230987353
+ },
+ {
+  "region": "Region E",
+  "year": 2022,
+  "planned_uah": 684000000,
+  "executed_uah": 599950391
+ },
+ {
+  "region": "Region E",
+  "year": 2023,
+  "planned_uah": 798000000,
+  "executed_uah": 674454912
+ },
+ {
+  "region": "Region E",
+  "year": 2024,
+  "planned_uah": 695000000,
+  "executed_uah": 655246763
+ },
+ {
+  "region": "Region F",
+  "year": 2021,
+  "planned_uah": 292000000,
+  "executed_uah": 260785020
+ },
+ {
+  "region": "Region F",
+  "year": 2022,
+  "planned_uah": 660000000,
+  "executed_uah": 645498276
+ },
+ {
+  "region": "Region F",
+  "year": 2023,
+  "planned_uah": 677000000,
+  "executed_uah": 551687498
+ },
+ {
+  "region": "Region F",
+  "year": 2024,
+  "planned_uah": 310000000,
+  "executed_uah": 286472123
+ }
+]
