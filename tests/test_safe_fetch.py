@@ -142,3 +142,90 @@ def test_http_error_status_is_reported_without_body():
             resolver=public,
         )
     assert "private page" not in str(exc.value)
+
+
+def boom(_host: str) -> list[str]:
+    raise AssertionError("resolver must not be called for trusted hosts")
+
+
+def test_trusted_host_skips_resolution_but_not_the_https_rule():
+    trusted = frozenset({"data.gov.ua"})
+    assert validate_public_https_url("https://data.gov.ua/a.csv", boom, trusted)
+    with pytest.raises(UnsafeUrl):
+        validate_public_https_url("http://data.gov.ua/a.csv", boom, trusted)
+    with pytest.raises(UnsafeUrl):  # untrusted hosts are still resolved and checked
+        validate_public_https_url("https://other.test/a.csv", lambda _h: ["10.0.0.1"], trusted)
+
+
+def test_ip_literals_are_checked_even_if_listed_as_trusted():
+    with pytest.raises(UnsafeUrl):
+        validate_public_https_url("https://10.0.0.1/a.csv", boom, frozenset({"10.0.0.1"}))
+
+
+def test_trusted_hosts_apply_to_redirect_hops():
+    def handler(req):
+        if req.url.host == "data.gov.ua":
+            return httpx.Response(302, headers={"location": "https://evil.test/x.csv"})
+        return httpx.Response(200, content=b"ok")
+
+    with pytest.raises(UnsafeUrl):
+        fetch_bytes(
+            "https://data.gov.ua/a.csv",
+            max_bytes=100,
+            client=client_for(handler),
+            resolver=lambda _h: ["10.0.0.9"],
+            trusted_hosts=frozenset({"data.gov.ua"}),
+        )
+    data = fetch_bytes(
+        "https://data.gov.ua/a.csv",
+        max_bytes=100,
+        client=client_for(handler),
+        resolver=lambda _h: ["93.184.216.34"],
+        trusted_hosts=frozenset({"data.gov.ua"}),
+    )
+    assert data == b"ok"
+
+
+def test_download_retries_transient_status_then_succeeds():
+    responses = iter([httpx.Response(522), httpx.Response(503), httpx.Response(200, content=b"ok")])
+    sleeps: list[float] = []
+    data = fetch_bytes("https://example.test/a.csv", max_bytes=100,
+                       client=client_for(lambda _r: next(responses)), resolver=public,
+                       sleep=sleeps.append)  # fmt: skip
+    assert data == b"ok" and sleeps == [0.5, 1.0]
+
+
+def test_download_retries_network_errors_and_then_gives_up():
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        raise httpx.ConnectTimeout("slow", request=req)
+
+    with pytest.raises(UpstreamError, match="ConnectTimeout"):
+        fetch_bytes("https://example.test/a.csv", max_bytes=100, client=client_for(handler),
+                    resolver=public, sleep=lambda _s: None)  # fmt: skip
+    assert calls["n"] == 3
+
+
+def test_download_gives_up_after_persistent_522_and_never_retries_404():
+    calls = {"n": 0}
+
+    def always_522(_req):
+        calls["n"] += 1
+        return httpx.Response(522)
+
+    with pytest.raises(UpstreamError, match="HTTP 522"):
+        fetch_bytes("https://example.test/a.csv", max_bytes=100, client=client_for(always_522),
+                    resolver=public, sleep=lambda _s: None)  # fmt: skip
+    assert calls["n"] == 3
+    calls["n"] = 0
+
+    def not_found(_req):
+        calls["n"] += 1
+        return httpx.Response(404)
+
+    with pytest.raises(UpstreamError, match="HTTP 404"):
+        fetch_bytes("https://example.test/a.csv", max_bytes=100, client=client_for(not_found),
+                    resolver=public, sleep=lambda _s: None)  # fmt: skip
+    assert calls["n"] == 1

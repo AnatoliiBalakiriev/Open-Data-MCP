@@ -34,9 +34,17 @@ def _check_id(value: str, label: str) -> str:
     return value.strip()
 
 
+# Portals contain formats typed with Cyrillic look-alike letters (seen live: 'сsv' with Cyrillic с).
+_LOOKALIKES = str.maketrans("асеорхуі", "aceopxyi")
+
+
+def normalize_format(raw: object) -> str:
+    return str(raw or "").strip().lower().translate(_LOOKALIKES)
+
+
 def classify_resource(resource: dict[str, Any]) -> tuple[str | None, str]:
     """Return (kind, reason). kind is 'datastore' | 'csv' | 'json' | None."""
-    fmt = str(resource.get("format") or "").strip().lower()
+    fmt = normalize_format(resource.get("format"))
     url = str(resource.get("url") or "").lower().split("?")[0]
     if resource.get("datastore_active") is True:
         return "datastore", "CKAN DataStore is active for this resource."
@@ -124,6 +132,7 @@ class OpenDataService:
                     client=self._download,
                     resolver=self._resolver,
                     max_redirects=self.settings.max_redirects,
+                    trusted_hosts=frozenset(self.settings.trusted_download_hosts),
                 )
                 retrieved_at = self._utc_now()
                 if kind == "csv":
@@ -261,10 +270,17 @@ class OpenDataService:
                 row_count = session.row_count
             sample, sample_columns = preview.rows, preview.columns
             schema_source, authoritative = "inferred_from_file", False
+            degenerate = len(fields) == 1 and any(ch in fields[0]["name"] for ch in ";,\t|")
             note = (
                 "Types were inferred by DuckDB from the full file; the portal did not publish a "
                 "schema, so treat them as a best guess (dates may be read as text, and so on)."
             )
+            if degenerate:
+                note += (
+                    " WARNING: the file parsed into a single column whose name contains delimiter "
+                    "characters; it is probably not a clean table (e.g. a spreadsheet export with "
+                    "title rows). Do not trust queries on it without checking sample_rows."
+                )
         source = self._source(
             cached,
             resource,

@@ -15,8 +15,8 @@ import httpx
 
 from .config import Settings
 from .errors import InvalidInput, UpstreamError, UpstreamNotFound, UpstreamProtocolError
+from .safe_fetch import RETRY_STATUS
 
-RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 USER_AGENT = "open-data-mcp/0.1 (+https://github.com/AnatoliiBalakiriev/Open-Data-MCP)"
 
 

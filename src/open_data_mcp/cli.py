@@ -31,9 +31,19 @@ def load_dotenv(path: Path = Path(".env")) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
+# Only these reach the server subprocess. ANTHROPIC_* is deliberately absent: the server does not
+# need the API key. Proxy/CA variables are passed so the server works behind a corporate proxy.
+_PASSTHROUGH_PREFIXES = (
+    "OPEN_DATA_",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+)  # fmt: skip
+
+
 def _server_params(offline: bool) -> StdioServerParameters:
     args = ["-m", "open_data_mcp", "serve"] + (["--offline-fixtures"] if offline else [])
-    env = {k: v for k, v in os.environ.items() if k.startswith("OPEN_DATA_")}
+    env = {k: v for k, v in os.environ.items() if k.startswith(_PASSTHROUGH_PREFIXES)}
     return StdioServerParameters(command=sys.executable, args=args, env=env or None)
 
 

@@ -180,3 +180,18 @@ def test_safe_call_only_swallows_typed_errors():
     with pytest.raises(RuntimeError):
         safe_call(boom)
     assert issubclass(UnsafeSql, OpenDataError)
+
+
+@pytest.mark.parametrize("fmt", ["сsv", "СSV", " Csv ", "csv"])
+def test_cyrillic_lookalike_format_names_are_recognised(fmt):
+    from open_data_mcp.service import classify_resource
+
+    assert classify_resource({"format": fmt, "url": "https://x.test/a"})[0] == "csv"
+    assert classify_resource({"format": "xlsx"})[0] is None
+
+
+def test_degenerate_single_column_schema_gets_a_warning(service, portal):
+    # a non-tabular file parses into one 'column' whose name holds delimiters
+    portal.requests_csv = b'";;;;;;ZATV"\nx\ny\n'
+    out = service.get_schema(*REQ)
+    assert len(out["schema"]) == 1 and "WARNING" in out["note"]

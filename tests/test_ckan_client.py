@@ -75,6 +75,16 @@ def test_retries_503_then_succeeds_with_exponential_backoff():
     assert sleeps == [0.5, 1.0]
 
 
+@pytest.mark.parametrize("status", [520, 522, 524])
+def test_cloudflare_origin_errors_are_retried(status):
+    responses = iter(
+        [httpx.Response(status, text="error code: 522"), ok({"ckan_version": "2.7.2"})]
+    )
+    client, sleeps = make_client(lambda _r: next(responses))
+    assert client.status_show() == {"ckan_version": "2.7.2"}
+    assert sleeps == [0.5]
+
+
 def test_retry_after_header_is_honoured_and_capped():
     responses = iter(
         [

@@ -6,8 +6,9 @@ from model memory. Every successful data-backed answer carries machine-readable 
 
 > **Status: working prototype, not production software.** The CKAN adapter, SQL safety layer, MCP
 > server, agent and evaluation are implemented and tested **offline against a mocked portal and
-> SYNTHETIC fixtures**. A live run against `data.gov.ua` has **not** been verified yet (see
-> [Verification status](#verification-status)).
+> SYNTHETIC fixtures**. A live smoke test against `data.gov.ua` passed on 2026-10-18 (one real CSV
+> resource, CSV path only; see [Verification status](#verification-status) for exactly what was and
+> was not exercised).
 
 ## The problem
 
@@ -155,6 +156,10 @@ forwards MCP tool definitions as Anthropic tools, and runs a loop capped at 8 mo
 (`--max-iterations`). Without an API key it prints setup instructions and exits with code 2;
 the server, tests and offline evaluation never need a key.
 
+Behind an HTTP proxy that does the DNS resolving (no local DNS), the SSRF guard cannot resolve
+resource hosts and refuses them. List hosts you trust explicitly:
+`OPEN_DATA_TRUSTED_DOWNLOAD_HOSTS=data.gov.ua,opendata.gov.ua` (HTTPS is still required).
+
 ### Tests, lint, evaluation
 
 ```bash
@@ -196,8 +201,9 @@ Details, case list and limitations: [`evals/README.md`](evals/README.md).
 | Unit/integration tests, Ruff, mypy, offline evaluation | Run locally (see results above and in your own run). |
 | MCP server over real stdio subprocess + official MCP client | Tested (automated, offline fixtures). |
 | GitHub Actions workflow | Written; **not yet executed on GitHub**. |
-| Live `data.gov.ua` smoke test (`status_show`, `package_search`, `package_show`, DataStore) | **Not verified.** On 2026-10-18 (~20:14–20:25 UTC) the build sandbox blocked `data.gov.ua:443` (proxy answered HTTP 403 to `CONNECT`; the fetch tool failed DNS), so no request reached the portal. `scripts/smoke_live.py` is provided to run it elsewhere. |
-| Whether `data.gov.ua` enables DataStore on its resources, its dataset URL scheme (`/dataset/<name>` is assumed), and its rate limits | Unknown. CKAN-standard behaviour is assumed; the code does not depend on DataStore being present. |
+| Live `data.gov.ua` smoke test (`scripts/smoke_live.py`) | **Passed on 2026-10-18 (~21:04 UTC):** `status_show` (CKAN 2.7.2), `package_search`, `package_show` ×10, then end-to-end `get_schema` + `SELECT count(*)` on one real CSV resource (96 rows; license "Creative Commons Attribution", real `dataset_modified_at` ≠ `retrieved_at_utc`), and the generated `dataset_url` (`/dataset/<name>`) returned HTTP 200. Separately, `search_datasets` and `query` (count → 61 rows on another real CSV) and an unsafe-SQL refusal were exercised through the real MCP stdio server against the live portal. |
+| Not exercised live | The **DataStore** path: none of the ~25 sampled resources had `datastore_active=true`, so it is verified only against the mock. JSON resources and large files were not queried live either. Rate limits are unknown. |
+| Live behaviour that shaped the code | The portal sits behind Cloudflare and returns intermittent **HTTP 522** (now retried for API calls and downloads); some resources declare their format with Cyrillic look-alike letters (`сsv`; now normalised); some "CSV" files are spreadsheet exports with title rows and parse into one junk column (flagged in `get_schema.note`). |
 | Live agent run with a real Anthropic key | **Not run** (no key in the build environment). The loop is tested with a scripted model, including over a real stdio subprocess. |
 
 ## Data source, license, limits
@@ -209,9 +215,10 @@ Details, case list and limitations: [`evals/README.md`](evals/README.md).
   invented test data**, not government data.
 - **Freshness:** dataset *metadata* is cached for 300 s by default (`OPEN_DATA_CACHE_TTL_S`);
   *data* is fetched on every query, never cached. Provenance records both timestamps.
-- **Rate limits:** unknown for data.gov.ua; the client retries 429/5xx and transient network
-  errors up to 3 times with exponential backoff, honouring `Retry-After`. There is no throttling.
-- **Known limitations:** each query re-downloads the resource; no XLSX/Parquet; CSV type
+- **Rate limits:** unknown for data.gov.ua; the client retries 429/5xx, Cloudflare 52x and
+  transient network errors up to 3 times with exponential backoff, honouring `Retry-After`. There is no throttling.
+- **Known limitations:** messy real-world CSVs (title rows, merged cells) may load as garbage
+  columns; always check `get_schema` sample rows; each query re-downloads the resource; no XLSX/Parquet; CSV type
   inference is DuckDB's best guess; very wide or huge files are refused; DNS answers are validated
   before the request but the HTTP library resolves again (a determined DNS-rebinding attacker who
   controls a resource host is not fully excluded); no authentication, so do not expose the server
@@ -226,7 +233,7 @@ the environment (`.env` is git-ignored).
 
 ## Roadmap
 
-1. Run and record the live `data.gov.ua` smoke test and add one small, licensed real-data snapshot
-   to the evaluation.
+1. Add one small, licensed real-data snapshot to the evaluation and verify the DataStore path on a
+   portal resource that has it enabled.
 2. Level 2 evaluation of the agent with a recorded run (tracked cost and failure analysis).
 3. XLSX support and a cached, size-bounded download layer with freshness checks.

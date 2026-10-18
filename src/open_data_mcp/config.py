@@ -50,6 +50,9 @@ class Settings:
     query_timeout_s: float = 20.0
     duckdb_memory_limit: str = "512MB"
     max_redirects: int = 3
+    # Operator-trusted resource hosts: skip the local DNS/public-address check (useful behind an
+    # HTTP proxy that does the resolving). Still HTTPS-only. Empty by default.
+    trusted_download_hosts: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -61,5 +64,10 @@ class Settings:
             max_download_bytes=_int("OPEN_DATA_MAX_DOWNLOAD_BYTES", cls.max_download_bytes),
             max_table_rows=_int("OPEN_DATA_MAX_TABLE_ROWS", cls.max_table_rows),
             read_timeout_s=_float("OPEN_DATA_READ_TIMEOUT_S", cls.read_timeout_s),
+            trusted_download_hosts=tuple(
+                h.strip().lower()
+                for h in os.environ.get("OPEN_DATA_TRUSTED_DOWNLOAD_HOSTS", "").split(",")
+                if h.strip()
+            ),
             query_max_limit=_int("OPEN_DATA_QUERY_MAX_LIMIT", cls.query_max_limit),
         )
