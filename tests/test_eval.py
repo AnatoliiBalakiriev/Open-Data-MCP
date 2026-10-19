@@ -20,16 +20,19 @@ def test_level1_eval_passes_on_the_committed_fixtures():
     failed = [r for r in report.results if not r.correct or r.provenance_ok is False]
     assert failed == []
     counts = report.counts()
-    assert counts["answer_correctness"] == (20, 20)
-    assert counts["provenance"] == (20, 20)
-    assert counts["abstention"] == (7, 7)
-    assert report.skipped == ["live-forecast", "live-opinion"]
+    assert counts["answer_correctness"] == (31, 31)
+    assert counts["provenance"] == (31, 31)
+    assert counts["abstention"] == (8, 8)
+    assert report.counts("synthetic")["answer_correctness"] == (20, 20)
+    assert report.counts("real_snapshot")["answer_correctness"] == (11, 11)
+    assert report.counts("real_snapshot")["abstention"] == (1, 1)
+    assert report.skipped == ["live-forecast", "live-opinion", "real-live-forecast"]
 
 
 def test_there_are_about_twenty_answerable_cases_and_categories_are_mixed():
     cases = run_eval.load_cases()
     offline = [c for c in cases if not c.get("live_only")]
-    assert 20 <= len(offline) <= 30
+    assert 20 <= len(offline) <= 40
     assert {"count", "sum", "avg", "group", "date", "filter", "edge", "abstain"} <= {
         c["category"] for c in cases
     }
@@ -134,4 +137,46 @@ def test_fixture_generation_is_reproducible(tmp_path, monkeypatch):
 def test_markdown_report_includes_denominators():
     report = asyncio.run(run_eval.run_level1())
     md = run_eval.render_markdown(report)
-    assert "20 / 20" in md and "7 / 7" in md and "SYNTHETIC" in md
+    assert "20 / 20" in md and "11 / 11" in md and "31 / 31" in md and "8 / 8" in md
+    assert "Real data.gov.ua snapshot" in md and "invented test data" in md
+
+
+def real_world():
+    worlds = run_eval.build_worlds()
+    service, packages, urls = worlds["real_snapshot"]
+    return service, packages, urls
+
+
+def test_real_cases_use_the_real_snapshot_and_real_urls():
+    cases = [c for c in run_eval.load_cases() if c.get("fixture") == "real_snapshot"]
+    assert len(cases) == 13 and sum(1 for c in cases if c.get("live_only")) == 1
+    _service, packages, urls = real_world()
+    for case in cases:
+        truth = run_eval.truth_for(case, packages, urls)
+        assert truth["dataset_url"].startswith("https://data.gov.ua/dataset/")
+        assert truth["res"]["url"].startswith("https://data.gov.ua/dataset/")
+
+
+def test_real_provenance_is_checked_against_captured_metadata_including_dataset_url():
+    _service, packages, urls = real_world()
+    case = next(c for c in run_eval.load_cases() if c["id"] == "real-count-total")
+    truth = run_eval.truth_for(case, packages, urls)
+    source = {
+        "portal": "p", "dataset_id": truth["pkg"]["id"], "dataset_title": truth["pkg"]["title"],
+        "resource_id": truth["res"]["id"], "resource_url": truth["res"]["url"],
+        "license": truth["pkg"]["license_title"],
+        "dataset_modified_at": truth["pkg"]["metadata_modified"],
+        "resource_modified_at": truth["res"]["last_modified"], "dataset_url": truth["dataset_url"],
+        "retrieved_at_utc": "2026-01-01T00:00:00Z",
+    }  # fmt: skip
+    assert run_eval.check_provenance(source, truth) == (True, "")
+    wrong_url = {**source, "dataset_url": "https://fixtures.invalid/dataset/x"}
+    assert run_eval.check_provenance(wrong_url, truth)[0] is False
+
+
+def test_real_scorer_fails_on_a_wrong_real_number():
+    _service, packages, urls = real_world()
+    case = next(c for c in run_eval.load_cases() if c["id"] == "real-sum-seats")
+    truth = run_eval.truth_for(case, packages, urls)
+    out = {"ok": True, "rows": [[case["expect"]["value"] + 1]], "source": None}
+    assert run_eval.score_level1(case, out, truth).correct is False

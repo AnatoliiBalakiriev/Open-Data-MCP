@@ -1,0 +1,33 @@
+{
+  "snapshot_captured_at_utc": "2026-10-19T05:14:53Z",
+  "portal": "data.gov.ua",
+  "dataset_url": "https://data.gov.ua/dataset/6598555a-ee52-462c-9344-1a31ba2a1638",
+  "api_url": "https://data.gov.ua/api/3/action/package_show?id=f2416e7e-8ea7-449c-9dd2-eaf022a5ea1b",
+  "dataset": {
+    "id": "f2416e7e-8ea7-449c-9dd2-eaf022a5ea1b",
+    "name": "6598555a-ee52-462c-9344-1a31ba2a1638",
+    "title": "Адміністративні дані в значенні Закону України \"Про державну статистику\", що збираються (обробляються) та підлягають оприлюдненню відповідно до вимог закону розпорядником інформації",
+    "organization": "Департамент освіти та науки Івано-Франківської міської ради",
+    "license_id": "cc-by",
+    "license_title": "Creative Commons Attribution",
+    "license_url": "http://www.opendefinition.org/licenses/cc-by",
+    "metadata_created": "2019-08-20T11:54:32.204349",
+    "metadata_modified": "2026-02-19T13:04:46.388341"
+  },
+  "resource": {
+    "id": "1950d531-434a-48d8-bdea-1f1542a1800b",
+    "name": "statistics.csv",
+    "format": "CSV",
+    "url": "https://data.gov.ua/dataset/f2416e7e-8ea7-449c-9dd2-eaf022a5ea1b/resource/1950d531-434a-48d8-bdea-1f1542a1800b/download/statistics-2026.csv",
+    "size": 15248,
+    "created": "2021-04-05T12:51:06.386506",
+    "last_modified": "2026-02-19T13:03:54.259850"
+  },
+  "file": {
+    "path": "education_institutions.csv",
+    "bytes": 15248,
+    "sha256": "5e1607fb25ebadf947d436e8fe3ab772cbbe05595dec3ecc8ee73a930d0fbfcb",
+    "note": "Stored byte-for-byte as served (Windows-1251, ';' delimiter, CRLF)."
+  },
+  "attribution": "Департамент освіти та науки Івано-Франківської міської ради, via data.gov.ua, licensed under Creative Commons Attribution (CC BY): http://www.opendefinition.org/licenses/cc-by"
+}

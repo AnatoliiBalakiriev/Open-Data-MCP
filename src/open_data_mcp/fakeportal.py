@@ -208,3 +208,93 @@ def build_offline_service(
         resolver=public_resolver,
     )
     return service, portal
+
+
+# --------------------------------------------------------------------------- real-data snapshot
+
+SNAPSHOT_DIR = FIXTURE_DIR / "real"
+
+
+def load_snapshot_meta() -> dict[str, Any]:
+    """Metadata captured live by scripts/capture_snapshot.py (never hand-written)."""
+    meta: dict[str, Any] = json.loads((SNAPSHOT_DIR / "SNAPSHOT.json").read_text("utf-8"))
+    return meta
+
+
+def snapshot_settings(meta: dict[str, Any] | None = None) -> Settings:
+    meta = meta or load_snapshot_meta()
+    return Settings(
+        portal_name=(
+            "data.gov.ua (OFFLINE REPLAY of a snapshot captured "
+            f"{meta['snapshot_captured_at_utc']})"
+        ),
+        portal_base_url="https://data.gov.ua",
+        backoff_base_s=0.0,
+    )
+
+
+def snapshot_package(meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The CKAN `package_show` result as captured, minus personal fields."""
+    meta = meta or load_snapshot_meta()
+    ds, res = meta["dataset"], meta["resource"]
+    return {
+        "id": ds["id"],
+        "name": ds["name"],
+        "title": ds["title"],
+        "organization": {"title": ds["organization"]},
+        "license_id": ds["license_id"],
+        "license_title": ds["license_title"],
+        "license_url": ds["license_url"],
+        "metadata_created": ds["metadata_created"],
+        "metadata_modified": ds["metadata_modified"],
+        "resources": [{**res, "datastore_active": False}],
+    }
+
+
+class SnapshotPortal:
+    """Replays one captured dataset: `package_show` plus the byte-exact resource file."""
+
+    def __init__(self) -> None:
+        self.meta = load_snapshot_meta()
+        self.package = snapshot_package(self.meta)
+        self.csv_bytes = (SNAPSHOT_DIR / self.meta["file"]["path"]).read_bytes()
+        self.resource_path = urlsplit(self.meta["resource"]["url"]).path
+        self.calls: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        url = urlsplit(str(request.url))
+        self.calls.append(f"{url.netloc}{url.path}")
+        if url.netloc != "data.gov.ua":
+            return httpx.Response(404)
+        if url.path == self.resource_path:
+            return httpx.Response(200, content=self.csv_bytes)
+        query = {k: v[0] for k, v in parse_qs(url.query).items()}
+        if url.path.endswith("/package_show") and query.get("id") in (
+            self.package["id"],
+            self.package["name"],
+        ):
+            return FakePortal._ok(self.package)
+        if url.path.endswith("/package_search"):
+            hit = (
+                [self.package]
+                if query.get("q", "").lower() in self.package["title"].lower()
+                else []
+            )
+            return FakePortal._ok({"count": len(hit), "results": hit})
+        return FakePortal._fail(404, "Not Found Error", "Not found")
+
+
+def build_snapshot_service() -> tuple[OpenDataService, SnapshotPortal]:
+    """A service replaying the real data.gov.ua snapshot with no network access."""
+    portal = SnapshotPortal()
+    cfg = snapshot_settings(portal.meta)
+    ckan = CkanClient(
+        cfg, client=httpx.Client(transport=httpx.MockTransport(portal)), sleep=lambda _s: None
+    )
+    service = OpenDataService(
+        cfg,
+        ckan,
+        download_client=httpx.Client(transport=httpx.MockTransport(portal)),
+        resolver=public_resolver,
+    )
+    return service, portal

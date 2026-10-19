@@ -35,19 +35,36 @@ def load_dotenv(path: Path = Path(".env")) -> None:
 # need the API key. Proxy/CA variables are passed so the server works behind a corporate proxy.
 _PASSTHROUGH_PREFIXES = (
     "OPEN_DATA_",
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-)  # fmt: skip
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
 
 
-def _server_params(offline: bool) -> StdioServerParameters:
+def _server_params(offline: bool, snapshot: bool = False) -> StdioServerParameters:
     args = ["-m", "open_data_mcp", "serve"] + (["--offline-fixtures"] if offline else [])
+    args += ["--offline-snapshot"] if snapshot else []
     env = {k: v for k, v in os.environ.items() if k.startswith(_PASSTHROUGH_PREFIXES)}
     return StdioServerParameters(command=sys.executable, args=args, env=env or None)
 
 
-async def _ask(question: str, model: str, offline: bool, max_iterations: int, as_json: bool) -> int:
+async def _ask(
+    question: str,
+    model: str,
+    offline: bool,
+    snapshot: bool,
+    max_iterations: int,
+    as_json: bool,
+) -> int:
     import anthropic
     from mcp import Client
 
@@ -60,7 +77,7 @@ async def _ask(question: str, model: str, offline: bool, max_iterations: int, as
         async def create(self, **kwargs: Any) -> Any:
             return await self._inner.messages.create(**kwargs)
 
-    async with Client(_server_params(offline)) as mcp_client:
+    async with Client(_server_params(offline, snapshot)) as mcp_client:
         result = await run_agent(
             question,
             client=_Adapter(anthropic.AsyncAnthropic()),
@@ -105,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Serve SYNTHETIC fixtures instead of the live portal (no network).",
     )
+    serve.add_argument(
+        "--offline-snapshot",
+        action="store_true",
+        help="Replay the committed real data.gov.ua snapshot (no network).",
+    )
 
     ask = sub.add_parser("ask", help="Ask a question through the reference agent.")
     ask.add_argument("question")
@@ -115,19 +137,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Use SYNTHETIC fixtures (still calls the Anthropic API).",
     )
+    ask.add_argument(
+        "--offline-snapshot",
+        action="store_true",
+        help="Replay the committed real data.gov.ua snapshot (still calls the Anthropic API).",
+    )
     ask.add_argument("--json", action="store_true", help="Print a JSON result.")
 
     args = parser.parse_args(argv)
     if args.command == "serve":
         from .server import run_stdio
 
-        run_stdio(offline_fixtures=args.offline_fixtures)
+        run_stdio(offline_fixtures=args.offline_fixtures, offline_snapshot=args.offline_snapshot)
         return 0
     if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         print(SETUP_HINT, file=sys.stderr)
         return 2
     return asyncio.run(
-        _ask(args.question, args.model, args.offline_fixtures, args.max_iterations, args.json)
+        _ask(
+            args.question,
+            args.model,
+            args.offline_fixtures,
+            args.offline_snapshot,
+            args.max_iterations,
+            args.json,
+        )
     )
 
 

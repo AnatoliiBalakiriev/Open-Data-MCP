@@ -82,8 +82,15 @@ def create_server(service: OpenDataService) -> MCPServer:
 
 
 def build_service(
-    settings: Settings | None = None, *, offline_fixtures: bool = False
+    settings: Settings | None = None,
+    *,
+    offline_fixtures: bool = False,
+    offline_snapshot: bool = False,
 ) -> OpenDataService:
+    if offline_snapshot:
+        from .fakeportal import build_snapshot_service
+
+        return build_snapshot_service()[0]
     if offline_fixtures:
         from .fakeportal import build_offline_service
 
@@ -92,7 +99,9 @@ def build_service(
     return OpenDataService(cfg, CkanClient(cfg))
 
 
-def run_stdio(*, offline_fixtures: bool = False) -> None:
+def run_stdio(*, offline_fixtures: bool = False, offline_snapshot: bool = False) -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    create_server(build_service(offline_fixtures=offline_fixtures)).run("stdio")
+    create_server(
+        build_service(offline_fixtures=offline_fixtures, offline_snapshot=offline_snapshot)
+    ).run("stdio")

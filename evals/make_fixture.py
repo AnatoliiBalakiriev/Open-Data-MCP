@@ -18,6 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "src" / "open_data_mcp" / "fixtures"
+# The real snapshot is committed input (captured by scripts/capture_snapshot.py); never regenerated.
+REAL_DIR = Path(__file__).resolve().parent.parent / "src" / "open_data_mcp" / "fixtures" / "real"
 
 DISTRICTS = ["Центральний", "Північний", "Південний", "Східний", "Західний"]
 CATEGORIES = ["Roads", "Lighting", "Waste", "Water", "Parks"]
@@ -71,7 +73,16 @@ def make_budget() -> list[dict[str, int | str]]:
 
 
 def case(**kw):
-    return kw
+    return {"fixture": "synthetic", **kw}
+
+
+def real_rows() -> tuple[dict, list[dict[str, str]]]:
+    """Parse the committed real snapshot with plain Python (cp1251, ';'), independent of DuckDB."""
+    meta = json.loads((REAL_DIR / "SNAPSHOT.json").read_text("utf-8"))
+    text = (REAL_DIR / meta["file"]["path"]).read_bytes().decode("cp1251")
+    reader = csv.DictReader(text.splitlines(), delimiter=";")
+    rows = [{k.strip(): v for k, v in r.items()} for r in reader]
+    return meta, rows
 
 
 def main() -> None:
@@ -367,11 +378,148 @@ def main() -> None:
             expect={"type": "abstain_no_number"},
         ),
     ]
+
+    # ---- real data.gov.ua snapshot (CC BY), expected values again from plain Python ---------
+    meta, rr = real_rows()
+    RD = {"dataset_id": meta["dataset"]["id"], "resource_id": meta["resource"]["id"]}
+    PRE, SCH, VOC = (
+        "Заклад дошкільної освіти",
+        "Заклад загальної середньої освіти",
+        "Заклад професійно-технічної освіти",
+    )
+
+    def seats(r: dict[str, str]) -> int:
+        return int(r["numberofseats"])
+
+    def kids(r: dict[str, str]) -> int:
+        return int(r["numberofchildren"])
+
+    by_type_seats: dict[str, int] = defaultdict(int)
+    for r in rr:
+        by_type_seats[r["description"]] += seats(r)
+    top_type = sorted(by_type_seats.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    max_seats = max(seats(r) for r in rr)
+    max_names = sorted(r["prefLabel"] for r in rr if seats(r) == max_seats)
+    top3_kids = sorted(rr, key=lambda r: (-kids(r), r["prefLabel"]))[:3]
+    voc_seats = [seats(r) for r in rr if r["description"] == VOC]
+
+    def rcase(**kw):
+        return {"fixture": "real_snapshot", **kw}
+
+    cases += [
+        rcase(
+            id="real-count-total",
+            category="count",
+            question="How many institutions are listed in the education dataset?",
+            **RD,
+            sql="SELECT count(*) FROM data",
+            expect=scalar(len(rr)),
+        ),
+        rcase(
+            id="real-count-preschool",
+            category="count",
+            question="Скільки закладів дошкільної освіти в наборі?",
+            **RD,
+            sql=f"SELECT count(*) FROM data WHERE description = '{PRE}'",
+            expect=scalar(sum(r["description"] == PRE for r in rr)),
+        ),
+        rcase(
+            id="real-distinct-types",
+            category="count",
+            question="How many distinct institution types (description values) are there?",
+            **RD,
+            sql="SELECT count(DISTINCT description) FROM data",
+            expect=scalar(len({r["description"] for r in rr})),
+        ),
+        rcase(
+            id="real-sum-seats",
+            category="sum",
+            question="What is the total of the numberofseats column?",
+            **RD,
+            sql="SELECT sum(numberofseats) FROM data",
+            expect=scalar(sum(seats(r) for r in rr)),
+        ),
+        rcase(
+            id="real-sum-children-schools",
+            category="sum",
+            question="Sum of numberofchildren for general secondary education institutions?",
+            **RD,
+            sql=f"SELECT sum(numberofchildren) FROM data WHERE description = '{SCH}'",
+            expect=scalar(sum(kids(r) for r in rr if r["description"] == SCH)),
+        ),
+        rcase(
+            id="real-avg-seats-vocational",
+            category="avg",
+            question="Average numberofseats for vocational institutions, 2 decimals?",
+            **RD,
+            sql=f"SELECT round(avg(numberofseats), 2) FROM data WHERE description = '{VOC}'",
+            expect=scalar(round(sum(voc_seats) / len(voc_seats), 2), 0.01),
+        ),
+        rcase(
+            id="real-top-type-seats",
+            category="group",
+            question="Which institution type has the largest total numberofseats?",
+            **RD,
+            sql="SELECT description FROM data GROUP BY description ORDER BY sum(numberofseats) DESC, description LIMIT 1",
+            expect=scalar(top_type),
+        ),
+        rcase(
+            id="real-max-seats-name",
+            category="group",
+            question="Which institution has the largest numberofseats?",
+            **RD,
+            sql="SELECT prefLabel FROM data ORDER BY numberofseats DESC, prefLabel LIMIT 1",
+            expect=scalar(max_names[0]),
+        ),
+        rcase(
+            id="real-top3-children",
+            category="group",
+            question="Top 3 institutions by numberofchildren (name and value)?",
+            **RD,
+            sql="SELECT prefLabel, numberofchildren FROM data ORDER BY numberofchildren DESC, prefLabel LIMIT 3",
+            expect={"type": "rows", "rows": [[r["prefLabel"], kids(r)] for r in top3_kids]},
+        ),
+        rcase(
+            id="real-children-over-seats",
+            category="filter",
+            question="In how many rows is numberofchildren greater than numberofseats (literal comparison of the columns)?",
+            **RD,
+            sql="SELECT count(*) FROM data WHERE numberofchildren > numberofseats",
+            expect=scalar(sum(kids(r) > seats(r) for r in rr)),
+        ),
+        rcase(
+            id="real-duplicate-ids",
+            category="edge",
+            question="How many rows share an Identifier with another row (rows minus distinct Identifier values)?",
+            **RD,
+            sql="SELECT count(*) - count(DISTINCT Identifier) FROM data",
+            expect=scalar(len(rr) - len({r["Identifier"] for r in rr})),
+        ),
+        rcase(
+            id="real-abstain-missing-column",
+            category="abstain",
+            question="How many teachers work in these institutions?",
+            **RD,
+            sql="SELECT sum(teachers) FROM data",
+            expect=abstain("sql_error"),
+        ),
+        rcase(
+            id="real-live-forecast",
+            category="abstain",
+            question="How many children will attend these institutions in 2030?",
+            **RD,
+            sql=None,
+            live_only=True,
+            expect={"type": "abstain_no_number"},
+        ),
+    ]
     path = ROOT / "evals" / "questions.jsonl"
     path.write_text(
         "\n".join(json.dumps(c, ensure_ascii=False) for c in cases) + "\n", encoding="utf-8"
     )
-    print(f"wrote {len(cases)} cases, {n} request rows, {len(budget)} budget rows")
+    print(
+        f"wrote {len(cases)} cases ({len(rr)} real-snapshot rows), {n} request rows, {len(budget)} budget rows"
+    )
 
 
 if __name__ == "__main__":

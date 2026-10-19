@@ -189,9 +189,13 @@ def test_trusted_hosts_apply_to_redirect_hops():
 def test_download_retries_transient_status_then_succeeds():
     responses = iter([httpx.Response(522), httpx.Response(503), httpx.Response(200, content=b"ok")])
     sleeps: list[float] = []
-    data = fetch_bytes("https://example.test/a.csv", max_bytes=100,
-                       client=client_for(lambda _r: next(responses)), resolver=public,
-                       sleep=sleeps.append)  # fmt: skip
+    data = fetch_bytes(
+        "https://example.test/a.csv",
+        max_bytes=100,
+        client=client_for(lambda _r: next(responses)),
+        resolver=public,
+        sleep=sleeps.append,
+    )
     assert data == b"ok" and sleeps == [0.5, 1.0]
 
 
@@ -203,8 +207,13 @@ def test_download_retries_network_errors_and_then_gives_up():
         raise httpx.ConnectTimeout("slow", request=req)
 
     with pytest.raises(UpstreamError, match="ConnectTimeout"):
-        fetch_bytes("https://example.test/a.csv", max_bytes=100, client=client_for(handler),
-                    resolver=public, sleep=lambda _s: None)  # fmt: skip
+        fetch_bytes(
+            "https://example.test/a.csv",
+            max_bytes=100,
+            client=client_for(handler),
+            resolver=public,
+            sleep=lambda _s: None,
+        )
     assert calls["n"] == 3
 
 
@@ -216,8 +225,13 @@ def test_download_gives_up_after_persistent_522_and_never_retries_404():
         return httpx.Response(522)
 
     with pytest.raises(UpstreamError, match="HTTP 522"):
-        fetch_bytes("https://example.test/a.csv", max_bytes=100, client=client_for(always_522),
-                    resolver=public, sleep=lambda _s: None)  # fmt: skip
+        fetch_bytes(
+            "https://example.test/a.csv",
+            max_bytes=100,
+            client=client_for(always_522),
+            resolver=public,
+            sleep=lambda _s: None,
+        )
     assert calls["n"] == 3
     calls["n"] = 0
 
@@ -226,6 +240,11 @@ def test_download_gives_up_after_persistent_522_and_never_retries_404():
         return httpx.Response(404)
 
     with pytest.raises(UpstreamError, match="HTTP 404"):
-        fetch_bytes("https://example.test/a.csv", max_bytes=100, client=client_for(not_found),
-                    resolver=public, sleep=lambda _s: None)  # fmt: skip
+        fetch_bytes(
+            "https://example.test/a.csv",
+            max_bytes=100,
+            client=client_for(not_found),
+            resolver=public,
+            sleep=lambda _s: None,
+        )
     assert calls["n"] == 1
