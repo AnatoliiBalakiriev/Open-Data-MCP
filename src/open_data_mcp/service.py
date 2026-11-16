@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import httpx
 
 from .ckan_client import CachedValue, CkanClient
 from .config import Settings
+from .drift import SchemaSnapshot, compare_schemas, snapshot_from_prefix
+from .encoding_check import EncodingReport, normalize_to_utf8
 from .errors import (
     InvalidInput,
     OpenDataError,
@@ -17,9 +20,11 @@ from .errors import (
     UnsupportedResource,
     UpstreamProtocolError,
 )
+from .profile_issues import METHOD_NOTE, build_issues
+from .profiling import profile_table
 from .provenance import Source, assert_provenance, build_source, utc_now_iso
 from .query_engine import PARTIAL_DATA_HINT, TableSession
-from .safe_fetch import Resolver, fetch_bytes, system_resolver
+from .safe_fetch import Resolver, fetch_bytes, fetch_prefix, system_resolver
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,199}$")
 _NOTES_MAX = 300
@@ -39,7 +44,8 @@ _LOOKALIKES = str.maketrans("асеорхуі", "aceopxyi")
 
 
 def normalize_format(raw: object) -> str:
-    return str(raw or "").strip().lower().translate(_LOOKALIKES)
+    # Seen live: ".csv", "*.xlsx" (extension typed as the format), "xls(x)".
+    return str(raw or "").strip().lower().lstrip(".*").translate(_LOOKALIKES)
 
 
 def classify_resource(resource: dict[str, Any]) -> tuple[str | None, str]:
@@ -54,6 +60,36 @@ def classify_resource(resource: dict[str, Any]) -> tuple[str | None, str]:
         return "json", "Downloadable JSON records."
     shown = fmt.upper() or "unknown"
     return None, f"Format {shown} is not queryable (supported: DataStore, CSV, JSON)."
+
+
+def _resource_listing(package: dict[str, Any]) -> list[dict[str, Any]]:
+    listing = []
+    for r in package.get("resources") or []:
+        kind, reason = classify_resource(r)
+        listing.append(
+            {
+                "resource_id": r.get("id"),
+                "name": r.get("name"),
+                "format": r.get("format"),
+                "queryable": kind is not None,
+                "access": kind,
+                "note": reason,
+            }
+        )
+    return listing
+
+
+def _looks_degenerate(column_names: list[str]) -> bool:
+    return len(column_names) == 1 and any(ch in column_names[0] for ch in ";,\t|")
+
+
+@dataclass
+class _ProfileLoad:
+    session: TableSession
+    retrieved_at: str
+    coverage: dict[str, Any]
+    encoding: EncodingReport | None
+    malformed_rows: int | None
 
 
 class OpenDataService:
@@ -117,7 +153,7 @@ class OpenDataService:
         session = TableSession(self.settings)
         try:
             if kind == "datastore":
-                fields, records = self._read_datastore(str(resource["id"]))
+                fields, records, _total = self._read_datastore(str(resource["id"]))
                 retrieved_at = self._utc_now()
                 session.load_records(fields, records)
             else:
@@ -145,12 +181,15 @@ class OpenDataService:
         return session, retrieved_at
 
     def _read_datastore(
-        self, resource_id: str
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        self, resource_id: str, *, partial_ok: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int | None]:
+        """Return (fields, records, total). With `partial_ok`, stop at the row limit instead of
+        refusing; the caller must then say that the table is a prefix."""
         limit = self.settings.max_table_rows
         page_size = min(self.settings.datastore_page_size, limit)
         fields: list[dict[str, Any]] = []
         records: list[dict[str, Any]] = []
+        total: int | None = None
         offset = 0
         while True:
             page = self.ckan.datastore_search(resource_id, limit=page_size, offset=offset)
@@ -160,16 +199,19 @@ class OpenDataService:
             if not isinstance(batch, list):
                 raise UpstreamProtocolError("datastore_search returned no `records` list.")
             records.extend(batch)
+            total = page.get("total") if isinstance(page.get("total"), int) else None
             if len(records) > limit:
-                raise ResourceTooLarge(
-                    f"DataStore resource has more than {limit} rows.",
-                    hint=PARTIAL_DATA_HINT,
-                )
-            total = page.get("total")
-            offset += len(batch)
-            if not batch or (isinstance(total, int) and offset >= total):
+                if not partial_ok:
+                    raise ResourceTooLarge(
+                        f"DataStore resource has more than {limit} rows.",
+                        hint=PARTIAL_DATA_HINT,
+                    )
+                del records[limit:]
                 break
-        return fields, records
+            offset += len(batch)
+            if not batch or (total is not None and offset >= total):
+                break
+        return fields, records, total
 
     # ------------------------------------------------------------------ tools
 
@@ -212,20 +254,7 @@ class OpenDataService:
     def get_schema(self, dataset_id: str, resource_id: str | None = None) -> dict[str, Any]:
         dataset_id = _check_id(dataset_id, "dataset_id")
         cached = self.ckan.package_show(dataset_id)
-        resources = cached.value.get("resources") or []
-        listing = []
-        for r in resources:
-            kind, reason = classify_resource(r)
-            listing.append(
-                {
-                    "resource_id": r.get("id"),
-                    "name": r.get("name"),
-                    "format": r.get("format"),
-                    "queryable": kind is not None,
-                    "access": kind,
-                    "note": reason,
-                }
-            )
+        listing = _resource_listing(cached.value)
         if resource_id is None:
             queryable = [r for r in listing if r["queryable"]]
             if len(queryable) != 1:
@@ -270,7 +299,7 @@ class OpenDataService:
                 row_count = session.row_count
             sample, sample_columns = preview.rows, preview.columns
             schema_source, authoritative = "inferred_from_file", False
-            degenerate = len(fields) == 1 and any(ch in fields[0]["name"] for ch in ";,\t|")
+            degenerate = _looks_degenerate([f["name"] for f in fields])
             note = (
                 "Types were inferred by DuckDB from the full file; the portal did not publish a "
                 "schema, so treat them as a best guess (dates may be read as text, and so on)."
@@ -301,6 +330,220 @@ class OpenDataService:
             "resources": listing,
             "note": note,
             "source": source.to_dict(),
+        }
+
+    def profile_dataset(
+        self,
+        dataset_id: str,
+        resource_id: str | None = None,
+        compare_versions: bool = True,
+    ) -> dict[str, Any]:
+        dataset_id = _check_id(dataset_id, "dataset_id")
+        cached = self.ckan.package_show(dataset_id)
+        listing = _resource_listing(cached.value)
+        if resource_id is None:
+            queryable = [r for r in listing if r["queryable"]]
+            if len(queryable) != 1:
+                return {
+                    "dataset_id": cached.value.get("id"),
+                    "dataset_title": cached.value.get("title"),
+                    "dataset_url": self._dataset_url(cached.value),
+                    "resources": listing,
+                    "note": (
+                        "No resource_id given and the dataset does not have exactly one "
+                        "queryable resource. Choose a queryable resource_id."
+                    ),
+                }
+            resource_id = str(queryable[0]["resource_id"])
+        else:
+            resource_id = _check_id(resource_id, "resource_id")
+        resource = self._find_resource(cached.value, resource_id)
+        kind, reason = classify_resource(resource)
+        if kind is None:
+            raise UnsupportedResource(reason, hint="Use a CSV, JSON or DataStore resource.")
+
+        loaded = self._load_for_profile(resource, kind)
+        with loaded.session as session:
+            profile = profile_table(session, self.settings)
+            names = [c.name for c in session.columns]
+        encoding = asdict(loaded.encoding) if loaded.encoding else None
+        drift: dict[str, Any] | None = None
+        if compare_versions:
+            reference = SchemaSnapshot(
+                names,
+                {c["name"]: c["kind"] for c in profile["columns"]},
+                profile["rows"],
+            )
+            drift = self._schema_drift(cached.value, resource, reference)
+        issues = build_issues(
+            profile,
+            coverage=loaded.coverage,
+            encoding=encoding,
+            drift=drift,
+            malformed_rows=loaded.malformed_rows,
+            single_column_warning=_looks_degenerate(names),
+        )
+        source = self._source(
+            cached,
+            resource,
+            retrieved_at=loaded.retrieved_at,
+            access_method="datastore" if kind == "datastore" else "file_download",
+        )
+        counts = {
+            s: sum(1 for i in issues if i["severity"] == s)
+            for s in ("high", "medium", "low", "info")
+        }
+        citation = source.citation()
+        if not loaded.coverage["complete"]:
+            citation += f" Profile covers only the first {profile['rows']} rows."
+        result: dict[str, Any] = {
+            "dataset_id": cached.value.get("id"),
+            "dataset_title": cached.value.get("title"),
+            "dataset_url": self._dataset_url(cached.value),
+            "resource_id": resource_id,
+            "resource_name": resource.get("name"),
+            "coverage": loaded.coverage,
+            "rows": profile["rows"],
+            "columns_total": profile["columns_total"],
+            "columns_profiled": profile["columns_profiled"],
+            "malformed_rows": loaded.malformed_rows,
+            "issue_counts": counts,
+            "issues": issues,
+            "duplicates": profile["duplicates"],
+            "sparse_rows": profile["sparse_rows"],
+            "columns": profile["columns"],
+            "encoding": encoding,
+            "schema_drift": drift,
+            "notes": profile["notes"],
+            "method_note": METHOD_NOTE,
+            "source": source.to_dict(),
+            "citation": citation,
+        }
+        assert_provenance(result["source"])
+        return result
+
+    def _load_for_profile(self, resource: dict[str, Any], kind: str) -> _ProfileLoad:
+        """Like `_load_table`, but a too-large file or DataStore table is profiled as a prefix."""
+        cfg = self.settings
+        session = TableSession(cfg)
+        try:
+            if kind == "datastore":
+                fields, records, total = self._read_datastore(str(resource["id"]), partial_ok=True)
+                retrieved_at = self._utc_now()
+                session.load_records(fields, records)
+                complete = total is None or len(records) >= total
+                coverage = _coverage(
+                    complete=complete,
+                    rows=len(records),
+                    rows_in_resource=total,
+                    bytes_read=None,
+                    size=None,
+                    note="Read through the CKAN DataStore API.",
+                )
+                return _ProfileLoad(session, retrieved_at, coverage, None, None)
+            url = str(resource.get("url") or "")
+            if not url:
+                raise UnsupportedResource("Resource has no download URL in the portal metadata.")
+            fetch_args: dict[str, Any] = {
+                "client": self._download,
+                "resolver": self._resolver,
+                "max_redirects": cfg.max_redirects,
+                "trusted_hosts": frozenset(cfg.trusted_download_hosts),
+            }
+            if kind == "json":  # a JSON array cannot be cut safely: whole file or refusal
+                payload = fetch_bytes(url, max_bytes=cfg.max_download_bytes, **fetch_args)
+                truncated = False
+                declared: int | None = len(payload)
+            else:
+                head = fetch_prefix(url, max_bytes=cfg.max_download_bytes, **fetch_args)
+                payload, truncated, declared = head.payload, head.truncated, head.declared_size
+            retrieved_at = self._utc_now()
+            if truncated:  # never profile half a line
+                cut = payload.rfind(b"\n")
+                if cut <= 0:
+                    raise UnsupportedResource("The file head contains no complete line.")
+                payload = payload[:cut]
+            normalized, encoding = normalize_to_utf8(payload)
+            if kind == "csv":
+                session.load_csv(normalized, lenient=True, max_rows=cfg.max_table_rows)
+            else:
+                session.load_json(normalized)
+            complete = not truncated and not session.rows_cut
+            coverage = _coverage(
+                complete=complete,
+                rows=session.row_count,
+                rows_in_resource=session.row_count if complete else None,
+                bytes_read=len(payload),
+                size=declared,
+                note=(
+                    "The whole file was read."
+                    if complete
+                    else f"Only the first {len(payload)} bytes / {session.row_count} rows were "
+                    "read, in file order. The file is larger than the configured limits "
+                    f"({cfg.max_download_bytes} bytes, {cfg.max_table_rows} rows)."
+                ),
+            )
+            malformed = session.rejected_rows if kind == "csv" else None
+            return _ProfileLoad(session, retrieved_at, coverage, encoding, malformed)
+        except BaseException:
+            session.close()
+            raise
+
+    def _schema_drift(
+        self, package: dict[str, Any], resource: dict[str, Any], reference: SchemaSnapshot
+    ) -> dict[str, Any]:
+        cfg = self.settings
+        resources = package.get("resources") or []
+        position = {r.get("id"): i for i, r in enumerate(resources)}
+        here = position.get(resource.get("id"), 0)
+        skipped: list[dict[str, Any]] = []
+        candidates = []
+        for r in resources:
+            if r.get("id") == resource.get("id"):
+                continue
+            sibling_kind, _ = classify_resource(r)
+            if sibling_kind == "csv" and r.get("url"):
+                candidates.append(r)
+            else:
+                shown = normalize_format(r.get("format")).upper() or "unknown"
+                skipped.append(_skip(r, f"Format {shown} is not compared (only CSV files are)."))
+        candidates.sort(key=lambda r: abs(position[r.get("id")] - here))
+        for r in candidates[cfg.drift_max_resources :]:
+            skipped.append(
+                _skip(r, f"Beyond the limit of {cfg.drift_max_resources} compared files.")
+            )
+        compared: list[dict[str, Any]] = []
+        for r in sorted(candidates[: cfg.drift_max_resources], key=lambda r: position[r.get("id")]):
+            try:
+                head = fetch_prefix(
+                    str(r["url"]),
+                    max_bytes=cfg.drift_prefix_bytes,
+                    client=self._download,
+                    resolver=self._resolver,
+                    max_redirects=cfg.max_redirects,
+                    trusted_hosts=frozenset(cfg.trusted_download_hosts),
+                )
+                snapshot = snapshot_from_prefix(head.payload, cfg, truncated=head.truncated)
+            except OpenDataError as exc:
+                skipped.append(_skip(r, f"{exc.code}: {exc.message}"))
+                continue
+            compared.append(
+                {
+                    "resource_id": r.get("id"),
+                    "name": r.get("name"),
+                    "rows_sampled": snapshot.rows_sampled,
+                    **compare_schemas(reference, snapshot),
+                }
+            )
+        return {
+            "basis": (
+                "Sibling CSV resources of the same dataset, compared by header and by column "
+                f"types inferred from at most their first {cfg.drift_prefix_bytes} bytes. The "
+                "portal API does not give access to earlier contents of a replaced file."
+            ),
+            "compared": compared,
+            "skipped": skipped[:10],
+            "skipped_total": len(skipped),
         }
 
     def query(
@@ -347,6 +590,30 @@ class OpenDataService:
             )
         assert_provenance(result["source"])
         return result
+
+
+def _skip(resource: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {"resource_id": resource.get("id"), "name": resource.get("name"), "reason": reason}
+
+
+def _coverage(
+    *,
+    complete: bool,
+    rows: int,
+    rows_in_resource: int | None,
+    bytes_read: int | None,
+    size: int | None,
+    note: str,
+) -> dict[str, Any]:
+    return {
+        "mode": "full" if complete else "prefix_sample",
+        "complete": complete,
+        "rows_profiled": rows,
+        "rows_in_resource": rows_in_resource,
+        "bytes_read": bytes_read,
+        "resource_size_bytes": size,
+        "note": note,
+    }
 
 
 def safe_call(fn: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> dict[str, Any]:

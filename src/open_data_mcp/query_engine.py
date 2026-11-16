@@ -17,6 +17,8 @@ import json
 import math
 import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -29,7 +31,14 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from .config import Settings
-from .errors import InvalidInput, ResourceTooLarge, SqlError, UnsafeSql, UnsupportedResource
+from .errors import (
+    AnalysisTimeout,
+    InvalidInput,
+    ResourceTooLarge,
+    SqlError,
+    UnsafeSql,
+    UnsupportedResource,
+)
 
 TABLE_NAME = "data"
 
@@ -185,8 +194,12 @@ def _decode_text(payload: bytes) -> bytes:
             raise UnsupportedResource("CSV is neither UTF-8 nor Windows-1251 text.") from exc
 
 
-def _sql_str(value: str) -> str:
+def sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 _DATASTORE_TYPES = {
@@ -210,29 +223,47 @@ class TableSession:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._conn = duckdb.connect(":memory:")
-        self._conn.execute(f"SET memory_limit={_sql_str(settings.duckdb_memory_limit)}")
+        self._conn.execute(f"SET memory_limit={sql_literal(settings.duckdb_memory_limit)}")
         self._conn.execute("SET threads=2")
         self.columns: list[ColumnInfo] = []
         self.row_count = 0
+        # Only set by the lenient (profiling) loaders:
+        self.rejected_rows = 0  # CSV lines DuckDB could not fit into the table
+        self.rows_cut = False  # True when rows beyond `max_rows` were left out
 
     # -- loaders (trusted SQL only; run before the lockdown) ------------------------------
 
-    def load_csv(self, payload: bytes) -> None:
+    def load_csv(
+        self, payload: bytes, *, lenient: bool = False, max_rows: int | None = None
+    ) -> None:
+        """Load a CSV. `lenient` is for profiling only: every column stays raw text, malformed
+        lines are counted instead of failing, and rows beyond `max_rows` are cut (and flagged)."""
         text = _decode_text(payload)
         if not text.strip():
             raise UnsupportedResource("CSV resource is empty.")
+        if lenient:
+            options = "all_varchar=true, ignore_errors=true, store_rejects=true"
+        else:
+            options = "ignore_errors=false"
+        limit = f" LIMIT {int(max_rows) + 1}" if max_rows is not None else ""
         with tempfile.TemporaryDirectory(prefix="odm-") as tmp:
             path = Path(tmp) / "resource.csv"
             path.write_bytes(text)
             try:
                 self._conn.execute(
                     f"CREATE TABLE {TABLE_NAME} AS SELECT * FROM "
-                    f"read_csv({_sql_str(str(path))}, header=true, sample_size=-1, "
-                    "ignore_errors=false)"
+                    f"read_csv({sql_literal(str(path))}, header=true, sample_size=-1, {options})"
+                    f"{limit}"
                 )
             except duckdb.Error as exc:
                 raise UnsupportedResource(f"CSV could not be parsed: {str(exc)[:200]}") from exc
-        self._finish_load()
+        if lenient:
+            rejected = self._conn.execute(
+                "SELECT count(DISTINCT (file_id, line)) FROM reject_errors"
+            ).fetchone()
+            self.rejected_rows = int(rejected[0]) if rejected else 0
+        self._cut_rows(max_rows)
+        self._finish_load(enforce_row_cap=max_rows is None)
 
     def load_json(self, payload: bytes) -> None:
         try:
@@ -258,12 +289,20 @@ class TableSession:
             try:
                 self._conn.execute(
                     f"CREATE TABLE {TABLE_NAME} AS SELECT * FROM "
-                    f"read_json({_sql_str(str(path))}, format='newline_delimited', "
+                    f"read_json({sql_literal(str(path))}, format='newline_delimited', "
                     "sample_size=-1)"
                 )
             except duckdb.Error as exc:
                 raise UnsupportedResource(f"JSON could not be parsed: {str(exc)[:200]}") from exc
         self._finish_load()
+
+    def _cut_rows(self, max_rows: int | None) -> None:
+        if max_rows is None:
+            return
+        count = self._conn.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()
+        if count and int(count[0]) > max_rows:
+            self._conn.execute(f"DELETE FROM {TABLE_NAME} WHERE rowid >= {int(max_rows)}")
+            self.rows_cut = True
 
     def load_records(self, fields: list[dict[str, str]], rows: list[dict[str, Any]]) -> None:
         """Load DataStore records. Column types come from the portal's own field metadata."""
@@ -284,10 +323,10 @@ class TableSession:
         )
         self._finish_load()
 
-    def _finish_load(self) -> None:
+    def _finish_load(self, *, enforce_row_cap: bool = True) -> None:
         count = self._conn.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()
         self.row_count = int(count[0]) if count else 0
-        if self.row_count > self.settings.max_table_rows:
+        if enforce_row_cap and self.row_count > self.settings.max_table_rows:
             raise ResourceTooLarge(
                 f"Resource has {self.row_count} rows; the limit is {self.settings.max_table_rows}.",
                 hint=PARTIAL_DATA_HINT,
@@ -323,6 +362,33 @@ class TableSession:
         truncated = len(fetched) > cap
         rows = [[_json_value(v) for v in row] for row in fetched[:cap]]
         return QueryOutput(names, rows, len(rows), truncated, cap, self.row_count)
+
+    # -- trusted analysis ---------------------------------------------------------------
+
+    @contextmanager
+    def time_budget(self, seconds: float) -> Iterator[None]:
+        """Interrupt whatever DuckDB is running once `seconds` have passed."""
+        timer = threading.Timer(seconds, self._conn.interrupt)
+        timer.start()
+        try:
+            yield
+        finally:
+            timer.cancel()
+
+    def execute_trusted(self, sql: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+        """Run SQL built by this package (never by the model); used by the profiler.
+
+        Identifiers inside must be built with `quote_identifier`; values go through `params`.
+        """
+        try:
+            return self._conn.execute(sql, params or []).fetchall()
+        except duckdb.InterruptException as exc:
+            raise AnalysisTimeout(
+                "The analysis exceeded its time budget.",
+                hint="Profile a smaller resource, or raise OPEN_DATA_PROFILE_TIMEOUT_S.",
+            ) from exc
+        except duckdb.Error as exc:
+            raise SqlError(f"DuckDB rejected an internal statement: {str(exc)[:200]}") from exc
 
     def _resolve_limit(self, limit: int | None) -> int:
         if limit is None:

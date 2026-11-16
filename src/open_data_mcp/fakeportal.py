@@ -16,6 +16,7 @@ import httpx
 
 from .ckan_client import CkanClient
 from .config import Settings
+from .messy_fixture import build_files
 from .service import OpenDataService
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -98,6 +99,44 @@ def build_packages() -> list[dict[str, Any]]:
                 ),
             ],
         },
+        {
+            "id": "syn-quality-registry",
+            "name": "syn-quality-registry",
+            "title": "[SYNTHETIC FIXTURE] Quality-defect registry, one file per quarter",
+            "notes": "Planted defects: broken dates, duplicates, outliers, schema drift.",
+            "organization": org,
+            "metadata_modified": "2024-10-01T00:00:00.000000",
+            **license_,
+            "resources": [
+                _resource(
+                    "syn-res-q1", "registry 2024 Q1", ".csv", f"{FAKE_FILES}/registry_2024q1.csv"
+                ),
+                _resource(
+                    "syn-res-q2", "registry 2024 Q2", "CSV", f"{FAKE_FILES}/registry_2024q2.csv"
+                ),
+                _resource(
+                    "syn-res-q3", "registry 2024 Q3", "CSV", f"{FAKE_FILES}/registry_2024q3.csv"
+                ),
+                _resource("syn-res-q4-xlsx", "registry 2024 Q4", "XLSX", f"{FAKE_FILES}/q4.xlsx"),
+                _resource("syn-res-q5-gone", "registry 2025 Q1", "CSV", f"{FAKE_FILES}/gone.csv"),
+            ],
+        },
+        {
+            "id": "syn-file-defects",
+            "name": "syn-file-defects",
+            "title": "[SYNTHETIC FIXTURE] Files with encoding and structure defects",
+            "notes": "Windows-1251, mixed encodings, mojibake, ragged rows, an oversized log.",
+            "organization": org,
+            "metadata_modified": "2024-10-02T00:00:00.000000",
+            **license_,
+            "resources": [
+                _resource("syn-res-cp1251", "cp1251", "CSV", f"{FAKE_FILES}/enc_cp1251.csv"),
+                _resource("syn-res-mixed", "mixed", "CSV", f"{FAKE_FILES}/enc_mixed.csv"),
+                _resource("syn-res-mojibake", "mojibake", "CSV", f"{FAKE_FILES}/enc_mojibake.csv"),
+                _resource("syn-res-ragged", "ragged", "CSV", f"{FAKE_FILES}/ragged.csv"),
+                _resource("syn-res-biglog", "big log", "CSV", f"{FAKE_FILES}/big_log.csv"),
+            ],
+        },
         {  # deliberately sparse metadata: no license, no modification date, no organization
             "id": "syn-minimal-metadata",
             "name": "syn-minimal-metadata",
@@ -117,6 +156,7 @@ class FakePortal:
         self.packages = build_packages()
         self.budget = json.loads((FIXTURE_DIR / "budget_records.json").read_text("utf-8"))
         self.requests_csv = (FIXTURE_DIR / "service_requests.csv").read_bytes()
+        self.files = build_files()
         self.calls: list[str] = []
 
     # -- helpers
@@ -183,6 +223,8 @@ class FakePortal:
             return httpx.Response(200, content=self.requests_csv)
         if path == "/tiny.csv":
             return httpx.Response(200, content=b"a,b\n1,2\n3,4\n")
+        if path.lstrip("/") in self.files:
+            return httpx.Response(200, content=self.files[path.lstrip("/")])
         if path == "/huge.csv":
             return httpx.Response(200, content=b"x", headers={"content-length": "999999999"})
         return httpx.Response(404)

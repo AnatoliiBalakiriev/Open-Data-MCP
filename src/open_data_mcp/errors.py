@@ -41,6 +41,12 @@ class ResourceTooLarge(OpenDataError):
     code = "resource_too_large"
 
 
+class AnalysisTimeout(OpenDataError):
+    """A profiling run exceeded its time budget."""
+
+    code = "timeout"
+
+
 class UnsafeUrl(OpenDataError):
     code = "unsafe_url"
 

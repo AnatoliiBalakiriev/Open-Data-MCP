@@ -41,7 +41,7 @@ extend-exclude = [".venv"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 # Ukrainian text is the domain of this project: Cyrillic look-alike letters are intentional.
-ignore = ["RUF001", "RUF003"]
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 # Table of one-line SQL gold queries; wrapping them would hurt readability.

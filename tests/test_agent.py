@@ -54,7 +54,12 @@ async def test_tool_loop_end_to_end_and_provenance_is_appended(service):
     assert result.sources[0]["resource_id"] == REQ[1]
     # tool schemas and system prompt reached the model; tool result fed back
     first, second = model.requests
-    assert {t["name"] for t in first["tools"]} == {"search_datasets", "get_schema", "query"}
+    assert {t["name"] for t in first["tools"]} == {
+        "search_datasets",
+        "get_schema",
+        "query",
+        "profile_dataset",
+    }
     assert first["system"] == SYSTEM_PROMPT
     tool_result = second["messages"][-1]["content"][0]
     assert tool_result["type"] == "tool_result" and tool_result["tool_use_id"] == "t1"

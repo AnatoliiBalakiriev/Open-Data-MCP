@@ -54,6 +54,12 @@ class Settings:
     # HTTP proxy that does the resolving). Still HTTPS-only. Empty by default.
     trusted_download_hosts: tuple[str, ...] = ()
 
+    # profile_dataset
+    profile_timeout_s: float = 60.0
+    profile_max_columns: int = 100
+    drift_max_resources: int = 6  # sibling files compared for schema drift
+    drift_prefix_bytes: int = 256 * 1024  # only the head of each sibling is read
+
     @classmethod
     def from_env(cls) -> Settings:
         base = os.environ.get("OPEN_DATA_PORTAL_URL", cls.portal_base_url).rstrip("/")
@@ -70,4 +76,5 @@ class Settings:
                 if h.strip()
             ),
             query_max_limit=_int("OPEN_DATA_QUERY_MAX_LIMIT", cls.query_max_limit),
+            profile_timeout_s=_float("OPEN_DATA_PROFILE_TIMEOUT_S", cls.profile_timeout_s),
         )

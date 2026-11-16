@@ -10,6 +10,8 @@ import ipaddress
 import socket
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TypeVar
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -17,6 +19,7 @@ import httpx
 from .errors import ResourceTooLarge, UnsafeUrl, UpstreamError
 
 Resolver = Callable[[str], list[str]]
+_T = TypeVar("_T")
 
 
 def system_resolver(host: str) -> list[str]:
@@ -87,6 +90,74 @@ def fetch_bytes(
     Transient failures (network errors, 429/5xx/Cloudflare 52x) are retried a bounded number of
     times per hop; size, URL-safety and 4xx errors are never retried.
     """
+    return _fetch(
+        url,
+        reader=lambda response, deadline: _read_limited(response, max_bytes, deadline),
+        client=client,
+        resolver=resolver,
+        max_redirects=max_redirects,
+        trusted_hosts=trusted_hosts,
+        total_timeout_s=total_timeout_s,
+        retries=retries,
+        backoff_s=backoff_s,
+        sleep=sleep,
+    )
+
+
+@dataclass(frozen=True)
+class Prefix:
+    """The first bytes of a download. `truncated` is True when the resource has more."""
+
+    payload: bytes
+    truncated: bool
+    declared_size: int | None
+
+
+def fetch_prefix(
+    url: str,
+    *,
+    max_bytes: int,
+    client: httpx.Client,
+    resolver: Resolver = system_resolver,
+    max_redirects: int = 3,
+    trusted_hosts: frozenset[str] = frozenset(),
+    total_timeout_s: float = 60.0,
+    retries: int = 2,
+    backoff_s: float = 0.5,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Prefix:
+    """Like `fetch_bytes`, but a resource larger than `max_bytes` yields its first `max_bytes`.
+
+    Only for callers that label the result as a prefix (never for `query`). The connection is
+    closed as soon as enough bytes have been read, so a 400 MB file costs `max_bytes` of traffic.
+    """
+    return _fetch(
+        url,
+        reader=lambda response, deadline: _read_prefix(response, max_bytes, deadline),
+        client=client,
+        resolver=resolver,
+        max_redirects=max_redirects,
+        trusted_hosts=trusted_hosts,
+        total_timeout_s=total_timeout_s,
+        retries=retries,
+        backoff_s=backoff_s,
+        sleep=sleep,
+    )
+
+
+def _fetch(
+    url: str,
+    *,
+    reader: Callable[[httpx.Response, float], _T],
+    client: httpx.Client,
+    resolver: Resolver,
+    max_redirects: int,
+    trusted_hosts: frozenset[str],
+    total_timeout_s: float,
+    retries: int,
+    backoff_s: float,
+    sleep: Callable[[float], None],
+) -> _T:
     deadline = time.monotonic() + total_timeout_s
     current = url
     for _ in range(max_redirects + 1):
@@ -108,7 +179,7 @@ def fetch_bytes(
                         raise UpstreamError(
                             f"Resource download failed with HTTP {response.status_code}."
                         )
-                    return _read_limited(response, max_bytes, deadline)
+                    return reader(response, deadline)
             except httpx.HTTPError as exc:
                 if last:
                     raise UpstreamError(
@@ -120,11 +191,16 @@ def fetch_bytes(
     raise UpstreamError("Too many redirects while downloading the resource.")
 
 
-def _read_limited(response: httpx.Response, max_bytes: int, deadline: float) -> bytes:
+def _declared_size(response: httpx.Response) -> int | None:
     declared = response.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > max_bytes:
+    return int(declared) if declared and declared.isdigit() else None
+
+
+def _read_limited(response: httpx.Response, max_bytes: int, deadline: float) -> bytes:
+    declared = _declared_size(response)
+    if declared is not None and declared > max_bytes:
         raise ResourceTooLarge(
-            f"Resource is {int(declared)} bytes; the limit is {max_bytes}.",
+            f"Resource is {declared} bytes; the limit is {max_bytes}.",
             hint="Pick a smaller resource. Partial data is never queried.",
         )
     chunks: list[bytes] = []
@@ -140,3 +216,27 @@ def _read_limited(response: httpx.Response, max_bytes: int, deadline: float) -> 
             raise UpstreamError("Resource download timed out.")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _read_prefix(response: httpx.Response, max_bytes: int, deadline: float) -> Prefix:
+    declared = _declared_size(response)
+    chunks: list[bytes] = []
+    total = 0
+    truncated = declared is not None and declared > max_bytes
+    stream = response.iter_bytes()  # one iterator only: httpx refuses a second one
+    for chunk in stream:
+        if time.monotonic() > deadline:
+            raise UpstreamError("Resource download timed out.")
+        room = max_bytes - total
+        if len(chunk) > room:
+            chunks.append(chunk[:room])
+            total = max_bytes
+            truncated = True
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total == max_bytes:
+            # Exactly full: more data may follow, so peek before claiming completeness.
+            truncated = truncated or next(stream, b"") != b""
+            break
+    return Prefix(b"".join(chunks), truncated, declared)

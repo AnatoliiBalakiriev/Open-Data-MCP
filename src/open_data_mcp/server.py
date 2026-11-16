@@ -14,14 +14,15 @@ from pydantic import Field
 from .ckan_client import CkanClient
 from .config import Settings
 from .errors import OpenDataError
-from .schemas import QueryResponse, SchemaResponse, SearchResponse
+from .schemas import ProfileResponse, QueryResponse, SchemaResponse, SearchResponse
 from .service import OpenDataService, safe_call
 
 log = logging.getLogger("open_data_mcp")
 
 INSTRUCTIONS = (
     "Tools for Ukrainian open data (CKAN portals). Workflow: search_datasets -> get_schema -> "
-    "query. Query results always include a `source` object; cite it. `query` runs read-only SQL "
+    "query; use profile_dataset for a data-quality check before trusting a table. Query results "
+    "and profiles always include a `source` object; cite it. `query` runs read-only SQL "
     "against one table named `data`; quote column names that contain spaces or non-ASCII "
     "characters with double quotes. Never guess numbers: if a tool fails, say so."
 )
@@ -151,6 +152,49 @@ def create_server(service: OpenDataService) -> MCPServer:
     ) -> QueryResponse:
         return QueryResponse.model_validate(
             _guard(service.query, dataset_id, resource_id, sql, limit)
+        )
+
+    @server.tool(
+        annotations=_READ_ONLY,
+        description=(
+            "Data-quality passport of one tabular resource. Use it when the user asks whether a "
+            "dataset can be trusted, or before relying on it for numbers. Returns ranked `issues` "
+            "plus per-column share of missing values (empty cells and placeholders like 'null' "
+            "or 'н/д'), exact duplicate rows, repeated identifiers, outliers in numeric "
+            "columns, broken dates (impossible, not a date, mixed formats), text damage "
+            "(mojibake, padded values), file encoding and schema drift against sibling CSV files "
+            "of the same dataset. Downloads the file; takes seconds. Unlike query, a file over "
+            f"{mb} MB or {cfg.max_table_rows} rows is profiled on its first rows only: check "
+            "`coverage.complete` and say so when it is false. Heuristic: outliers and thresholds "
+            "are candidates to review, see `method_note`. Read-only."
+        ),
+    )
+    def profile_dataset(
+        dataset_id: Annotated[
+            str,
+            Field(
+                description="The dataset_id (or name) of a search_datasets hit. URLs and file "
+                "paths are rejected."
+            ),
+        ],
+        resource_id: Annotated[
+            str | None,
+            Field(
+                description="A queryable resource_id from get_schema. Omit it to list the "
+                "dataset's resources (or to profile the only queryable one)."
+            ),
+        ] = None,
+        compare_versions: Annotated[
+            bool,
+            Field(
+                description="Also compare the header and column types with up to "
+                f"{cfg.drift_max_resources} sibling CSV files of the dataset (reads only the "
+                f"first {cfg.drift_prefix_bytes // 1024} KB of each). Set false to skip."
+            ),
+        ] = True,
+    ) -> ProfileResponse:
+        return ProfileResponse.model_validate(
+            _guard(service.profile_dataset, dataset_id, resource_id, compare_versions)
         )
 
     return server

@@ -15,10 +15,10 @@ async def call(service: Any, name: str, args: dict[str, Any]):
         return await client.call_tool(name, args)
 
 
-async def test_three_read_only_tools_with_schemas(service):
+async def test_four_read_only_tools_with_schemas(service):
     async with Client(create_server(service)) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
-    assert set(tools) == {"search_datasets", "get_schema", "query"}
+    assert set(tools) == {"search_datasets", "get_schema", "query", "profile_dataset"}
     for tool in tools.values():
         assert tool.annotations and tool.annotations.read_only_hint is True
         assert tool.input_schema["type"] == "object" and tool.output_schema
@@ -114,7 +114,11 @@ async def test_numbers_in_descriptions_come_from_the_settings_not_from_literals(
     from open_data_mcp.fakeportal import OFFLINE_SETTINGS, build_offline_service
 
     tuned = replace(
-        OFFLINE_SETTINGS, query_max_limit=37, search_max_limit=7, max_download_bytes=3 * 1024 * 1024
+        OFFLINE_SETTINGS,
+        query_max_limit=37,
+        search_max_limit=7,
+        max_download_bytes=3 * 1024 * 1024,
+        drift_max_resources=4,
     )
     service, _ = build_offline_service(tuned)
     tools = await tools_of(service)
@@ -123,3 +127,8 @@ async def test_numbers_in_descriptions_come_from_the_settings_not_from_literals(
     assert "up to 7 hits" in tools["search_datasets"].description
     assert "1-37" in tools["query"].input_schema["properties"]["limit"]["description"]
     assert "1-7" in tools["search_datasets"].input_schema["properties"]["limit"]["description"]
+    profile = tools["profile_dataset"]
+    assert "3 MB" in profile.description and "coverage.complete" in profile.description
+    assert (
+        "up to 4 sibling" in profile.input_schema["properties"]["compare_versions"]["description"]
+    )

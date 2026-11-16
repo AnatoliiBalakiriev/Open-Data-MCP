@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from open_data_mcp.errors import ResourceTooLarge, UnsafeUrl, UpstreamError
-from open_data_mcp.safe_fetch import fetch_bytes, validate_public_https_url
+from open_data_mcp.safe_fetch import fetch_bytes, fetch_prefix, validate_public_https_url
 
 
 def public(_host: str) -> list[str]:
@@ -248,3 +248,45 @@ def test_download_gives_up_after_persistent_522_and_never_retries_404():
             sleep=lambda _s: None,
         )
     assert calls["n"] == 1
+
+
+def _client(response: httpx.Response) -> httpx.Client:
+    return httpx.Client(transport=httpx.MockTransport(lambda _request: response))
+
+
+def _prefix(response: httpx.Response, limit: int):
+    return fetch_prefix(
+        "https://files.test/x.csv", max_bytes=limit, client=_client(response), resolver=public
+    )
+
+
+def test_prefix_of_a_larger_file_is_cut_and_flagged():
+    got = _prefix(httpx.Response(200, content=b"a" * 100), 40)
+    assert got.payload == b"a" * 40 and got.truncated is True and got.declared_size == 100
+
+
+@pytest.mark.parametrize(("size", "truncated"), [(39, False), (40, False), (41, True)])
+def test_prefix_boundary_is_exact(size, truncated):
+    got = _prefix(httpx.Response(200, content=b"a" * size), 40)
+    assert got.truncated is truncated and len(got.payload) == min(size, 40)
+
+
+def test_prefix_of_a_stream_without_content_length_detects_more_data():
+    def chunks():
+        yield b"a" * 40  # exactly full, and one more chunk follows
+        yield b"b"
+
+    got = _prefix(httpx.Response(200, content=chunks()), 40)
+    assert got.payload == b"a" * 40 and got.truncated is True and got.declared_size is None
+
+
+def test_prefix_keeps_every_url_safety_check():
+    with pytest.raises(UnsafeUrl):
+        fetch_prefix(
+            "https://internal.test/x.csv",
+            max_bytes=10,
+            client=_client(httpx.Response(200, content=b"x")),
+            resolver=lambda _h: ["10.0.0.5"],
+        )
+    with pytest.raises(UpstreamError):
+        _prefix(httpx.Response(404), 10)
