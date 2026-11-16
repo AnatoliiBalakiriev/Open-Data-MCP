@@ -1,4 +1,4 @@
-"""MCP server exposing three read-only tools over stdio."""
+"""MCP server over stdio: four read-only tools, a schema resource template and a prompt."""
 
 # No `from __future__ import annotations`: parameter descriptions below are built from runtime
 # settings, and the MCP SDK needs the annotations evaluated, not left as strings.
@@ -15,17 +15,43 @@ from .ckan_client import CkanClient
 from .config import Settings
 from .errors import OpenDataError
 from .schemas import ProfileResponse, QueryResponse, SchemaResponse, SearchResponse
-from .service import OpenDataService, safe_call
+from .service import OpenDataService, check_id, safe_call
 
 log = logging.getLogger("open_data_mcp")
 
+SCHEMA_URI_TEMPLATE = "opendata://dataset/{dataset_id}/schema"
+
 INSTRUCTIONS = (
     "Tools for Ukrainian open data (CKAN portals). Workflow: search_datasets -> get_schema -> "
-    "query; use profile_dataset for a data-quality check before trusting a table. Query results "
-    "and profiles always include a `source` object; cite it. `query` runs read-only SQL "
-    "against one table named `data`; quote column names that contain spaces or non-ASCII "
-    "characters with double quotes. Never guess numbers: if a tool fails, say so."
+    "query; use profile_dataset for a data-quality check before trusting a table. The resource "
+    f"template {SCHEMA_URI_TEMPLATE} reads a dataset's schema by URI, and the prompt "
+    "data_quality_report(dataset_id) runs a full quality review. Query results and profiles "
+    "always include a `source` object; cite it. `query` runs read-only SQL against one table "
+    "named `data`; quote column names that contain spaces or non-ASCII characters with double "
+    "quotes. Never guess numbers: if a tool fails, say so."
 )
+
+DATA_QUALITY_PROMPT = """\
+Prepare a data-quality report for the open dataset `{dataset_id}`.
+
+1. Call the `profile_dataset` tool with dataset_id="{dataset_id}". If the result has no `columns`
+   but lists `resources`, choose the queryable resource that is most likely the main table, say
+   which one you chose and why, and call `profile_dataset` again with its resource_id. If no
+   resource is queryable, say so and stop.
+2. Base every statement on the tool result and quote its numbers. Never invent or round away a
+   finding. Outliers are candidates to review, not proven errors. If the tool returns ok=false,
+   report the error and stop.
+3. Write the report with these sections:
+   - Verdict: one sentence saying whether the data can be used as it is, with fixes, or not at
+     all, justified by the high-severity issues.
+   - Key issues: from `issues`, worst first, each with its column and numbers.
+   - Columns: a table of column, kind and missing share, with a short note where something is
+     off.
+   - Coverage: if `coverage.complete` is false, say that only the first rows of a larger file
+     were profiled (give the number) and that the results describe that part only.
+   - Schema drift: what `schema_drift` found, or that sibling files could not be compared.
+   - Source: the `citation` text.
+4. Answer in the language the user writes in."""
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=True)
 
@@ -196,6 +222,39 @@ def create_server(service: OpenDataService) -> MCPServer:
         return ProfileResponse.model_validate(
             _guard(service.profile_dataset, dataset_id, resource_id, compare_versions)
         )
+
+    @server.resource(
+        SCHEMA_URI_TEMPLATE,
+        name="dataset_schema",
+        title="Dataset schema",
+        description=(
+            "Schema of a dataset's table, read by URI. Same JSON as the get_schema tool called "
+            "without resource_id: when the dataset has exactly one queryable resource, its "
+            "columns, types, row count and sample rows; otherwise the list of resources to pick "
+            "from. Includes a `source` object. Failures come back as ok=false, never as numbers."
+        ),
+        mime_type="application/json",
+    )
+    def dataset_schema(dataset_id: str) -> str:
+        result = SchemaResponse.model_validate(_guard(service.get_schema, dataset_id))
+        return result.model_dump_json(by_alias=True)
+
+    @server.prompt(
+        name="data_quality_report",
+        title="Data-quality report",
+        description=(
+            "Review the quality of an open dataset: runs profile_dataset and writes a report "
+            "with a verdict, ranked issues, per-column missing values, coverage, schema drift "
+            "and the source."
+        ),
+    )
+    def data_quality_report(
+        dataset_id: Annotated[
+            str,
+            Field(description="The dataset_id (or name) to review, e.g. from search_datasets."),
+        ],
+    ) -> str:
+        return DATA_QUALITY_PROMPT.format(dataset_id=check_id(dataset_id, "dataset_id"))
 
     return server
 

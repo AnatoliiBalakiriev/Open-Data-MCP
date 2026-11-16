@@ -64,6 +64,30 @@ input *and* output schemas.
 | `query(dataset_id, resource_id, sql, limit?)` | One read-only `SELECT` over a single resource, exposed as table `data`. Returns columns, rows, `truncated`, `row_limit`, `rows_in_resource` and `source`. |
 | `profile_dataset(dataset_id, resource_id?, compare_versions?)` | A data-quality passport of one resource: ranked `issues` plus per-column missing share, duplicates, outliers, broken dates, text damage, encoding and schema drift. See below. |
 
+### Resource and prompt (for clients without a free-form chat)
+
+Tools are called by the model. MCP also has primitives that the *user* or the client picks, which
+is what a client without an open chat box (a Claude Desktop button, an IDE command palette) can
+offer:
+
+| Primitive | Name | What it does |
+|---|---|---|
+| Resource template | `opendata://dataset/{dataset_id}/schema` | Reads a dataset's schema by URI: the same JSON as `get_schema` without `resource_id` (columns, types, row count, sample rows and `source` when the dataset has exactly one queryable resource; otherwise the list of resources to choose from). Failures are returned as `ok: false`, never as numbers. |
+| Prompt | `data_quality_report(dataset_id)` | A one-click scenario: instructs the model to call `profile_dataset` and write a report (verdict, ranked issues, per-column missing values, coverage, schema drift, source), quoting only the tool's numbers. |
+
+`dataset_id` is validated like in the tools; path-like or malformed ids are refused before any
+request to the portal.
+
+Inspect them with the official MCP Inspector (offline synthetic data, no network needed):
+
+```bash
+# interactive UI
+OPEN_DATA_OFFLINE=1 uv run --with "mcp[cli]" mcp dev src/open_data_mcp/dev.py
+# or scripted, e.g.
+npx @modelcontextprotocol/inspector --cli .venv/bin/python -m open_data_mcp serve \
+  --offline-fixtures --method resources/templates/list     # also: prompts/list, prompts/get
+```
+
 Every tool returns an envelope with `ok`. On failure: `ok: false`, an `error` object with a stable
 `code` (`unsafe_sql`, `unsafe_url`, `unsupported_resource`, `resource_too_large`, `sql_error`,
 `not_found`, `upstream_error`, …) and a `hint`; **no rows, no numbers**.
@@ -274,6 +298,8 @@ the environment (`.env` is git-ignored).
 
 ## Changelog
 
+- **Unreleased** — resource template `opendata://dataset/{dataset_id}/schema` and prompt
+  `data_quality_report(dataset_id)`; `src/open_data_mcp/dev.py` for `mcp dev`.
 - **0.2.0** — new tool `profile_dataset` (data-quality passport: missing values, duplicates,
   outliers, broken dates, encoding, schema drift; oversized files are profiled as a labelled
   prefix). `get_schema`/`query`/`profile_dataset` fall back to the file when a resource's

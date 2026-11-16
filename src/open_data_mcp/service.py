@@ -31,7 +31,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,199}$")
 _NOTES_MAX = 300
 
 
-def _check_id(value: str, label: str) -> str:
+def check_id(value: str, label: str) -> str:
     if not isinstance(value, str) or not _ID_RE.match(value.strip()):
         raise InvalidInput(
             f"`{label}` must be a CKAN id or name (letters, digits, '-', '_', '.').",
@@ -273,7 +273,7 @@ class OpenDataService:
         }
 
     def get_schema(self, dataset_id: str, resource_id: str | None = None) -> dict[str, Any]:
-        dataset_id = _check_id(dataset_id, "dataset_id")
+        dataset_id = check_id(dataset_id, "dataset_id")
         cached = self.ckan.package_show(dataset_id)
         listing = _resource_listing(cached.value)
         if resource_id is None:
@@ -293,7 +293,7 @@ class OpenDataService:
                 }
             resource_id = str(queryable[0]["resource_id"])
         else:
-            resource_id = _check_id(resource_id, "resource_id")
+            resource_id = check_id(resource_id, "resource_id")
         resource = self._find_resource(cached.value, resource_id)
         kind, reason = classify_resource(resource)
         if kind is None:
@@ -362,7 +362,7 @@ class OpenDataService:
         resource_id: str | None = None,
         compare_versions: bool = True,
     ) -> dict[str, Any]:
-        dataset_id = _check_id(dataset_id, "dataset_id")
+        dataset_id = check_id(dataset_id, "dataset_id")
         cached = self.ckan.package_show(dataset_id)
         listing = _resource_listing(cached.value)
         if resource_id is None:
@@ -380,7 +380,7 @@ class OpenDataService:
                 }
             resource_id = str(queryable[0]["resource_id"])
         else:
-            resource_id = _check_id(resource_id, "resource_id")
+            resource_id = check_id(resource_id, "resource_id")
         resource = self._find_resource(cached.value, resource_id)
         kind, reason = classify_resource(resource)
         if kind is None:
@@ -574,8 +574,8 @@ class OpenDataService:
     def query(
         self, dataset_id: str, resource_id: str, sql: str, limit: int | None = None
     ) -> dict[str, Any]:
-        dataset_id = _check_id(dataset_id, "dataset_id")
-        resource_id = _check_id(resource_id, "resource_id")
+        dataset_id = check_id(dataset_id, "dataset_id")
+        resource_id = check_id(resource_id, "resource_id")
         # Validate SQL before any network access, so unsafe input never triggers a download.
         from .query_engine import validate_select
 
