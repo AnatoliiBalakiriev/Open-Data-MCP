@@ -18,6 +18,7 @@ from .errors import (
     OpenDataError,
     ResourceTooLarge,
     UnsupportedResource,
+    UpstreamNotFound,
     UpstreamProtocolError,
 )
 from .profile_issues import METHOD_NOTE, build_issues
@@ -48,11 +49,13 @@ def normalize_format(raw: object) -> str:
     return str(raw or "").strip().lower().lstrip(".*").translate(_LOOKALIKES)
 
 
-def classify_resource(resource: dict[str, Any]) -> tuple[str | None, str]:
+def classify_resource(
+    resource: dict[str, Any], *, ignore_datastore_flag: bool = False
+) -> tuple[str | None, str]:
     """Return (kind, reason). kind is 'datastore' | 'csv' | 'json' | None."""
     fmt = normalize_format(resource.get("format"))
     url = str(resource.get("url") or "").lower().split("?")[0]
-    if resource.get("datastore_active") is True:
+    if resource.get("datastore_active") is True and not ignore_datastore_flag:
         return "datastore", "CKAN DataStore is active for this resource."
     if fmt == "csv" or (not fmt and url.endswith(".csv")):
         return "csv", "Downloadable CSV."
@@ -120,6 +123,24 @@ class OpenDataService:
         return self.settings.dataset_url_template.format(
             base=self.settings.portal_base_url, name=name
         )
+
+    def _effective_kind(self, resource: dict[str, Any], kind: str) -> tuple[str, str | None]:
+        """Return (kind, note). A `datastore_active` flag can be stale: data.gov.ua flags many
+        resources whose DataStore table no longer exists (59 of 60 probed on 2026-11-16). Then
+        the file itself is used, if its format allows, and the note says so."""
+        if kind != "datastore":
+            return kind, None
+        try:
+            self.ckan.datastore_search(str(resource["id"]), limit=0)
+        except UpstreamNotFound:
+            fallback, _ = classify_resource(resource, ignore_datastore_flag=True)
+            if fallback is None:
+                raise
+            return fallback, (
+                "The portal flags a DataStore table for this resource but it does not exist "
+                "(stale flag); the downloaded file was used instead."
+            )
+        return kind, None
 
     def _find_resource(self, package: dict[str, Any], resource_id: str) -> dict[str, Any]:
         for resource in package.get("resources") or []:
@@ -277,6 +298,7 @@ class OpenDataService:
         kind, reason = classify_resource(resource)
         if kind is None:
             raise UnsupportedResource(reason, hint="Use a CSV, JSON or DataStore resource.")
+        kind, fallback_note = self._effective_kind(resource, kind)
 
         if kind == "datastore":
             page = self.ckan.datastore_search(resource_id, limit=0)
@@ -310,6 +332,8 @@ class OpenDataService:
                     "characters; it is probably not a clean table (e.g. a spreadsheet export with "
                     "title rows). Do not trust queries on it without checking sample_rows."
                 )
+        if fallback_note:
+            note += " " + fallback_note
         source = self._source(
             cached,
             resource,
@@ -361,6 +385,7 @@ class OpenDataService:
         kind, reason = classify_resource(resource)
         if kind is None:
             raise UnsupportedResource(reason, hint="Use a CSV, JSON or DataStore resource.")
+        kind, fallback_note = self._effective_kind(resource, kind)
 
         loaded = self._load_for_profile(resource, kind)
         with loaded.session as session:
@@ -414,7 +439,7 @@ class OpenDataService:
             "columns": profile["columns"],
             "encoding": encoding,
             "schema_drift": drift,
-            "notes": profile["notes"],
+            "notes": [*profile["notes"], *([fallback_note] if fallback_note else [])],
             "method_note": METHOD_NOTE,
             "source": source.to_dict(),
             "citation": citation,
@@ -560,6 +585,7 @@ class OpenDataService:
         kind, reason = classify_resource(resource)
         if kind is None:
             raise UnsupportedResource(reason, hint="Use a CSV, JSON or DataStore resource.")
+        kind, _ = self._effective_kind(resource, kind)
         session, retrieved_at = self._load_table(resource, kind)
         with session:
             output = session.query(sql, limit)

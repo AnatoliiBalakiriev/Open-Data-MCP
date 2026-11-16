@@ -135,6 +135,13 @@ def build_packages() -> list[dict[str, Any]]:
                 _resource("syn-res-mojibake", "mojibake", "CSV", f"{FAKE_FILES}/enc_mojibake.csv"),
                 _resource("syn-res-ragged", "ragged", "CSV", f"{FAKE_FILES}/ragged.csv"),
                 _resource("syn-res-biglog", "big log", "CSV", f"{FAKE_FILES}/big_log.csv"),
+                _resource(
+                    "syn-res-stale",
+                    "stale datastore flag",
+                    "CSV",
+                    f"{FAKE_FILES}/tiny.csv",
+                    datastore_active=True,  # but no DataStore table exists (seen live)
+                ),
             ],
         },
         {  # deliberately sparse metadata: no license, no modification date, no organization

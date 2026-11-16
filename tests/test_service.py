@@ -123,7 +123,8 @@ def test_missing_source_dates_stay_null_in_query_result(service):
 def test_datastore_is_paginated_and_complete(service, portal):
     out = service.query(*BUD, "SELECT count(*) FROM data")
     assert out["rows"] == [[24]]
-    assert sum("datastore_search" in c for c in portal.calls) == 3  # page size 10 -> 10+10+4
+    calls = sum("datastore_search" in c for c in portal.calls)
+    assert calls == 1 + 3  # one limit=0 probe for a stale flag, then 10+10+4 rows
 
 
 def test_empty_result_carries_actionable_note(service):
@@ -195,3 +196,23 @@ def test_degenerate_single_column_schema_gets_a_warning(service, portal):
     portal.requests_csv = b'";;;;;;ZATV"\nx\ny\n'
     out = service.get_schema(*REQ)
     assert len(out["schema"]) == 1 and "WARNING" in out["note"]
+
+
+# --------------------------------------------------------------------------- stale DataStore flag
+
+
+def test_stale_datastore_flag_falls_back_to_the_file(service):
+    """data.gov.ua flags resources whose DataStore table no longer exists; use the file then."""
+    args = ("syn-file-defects", "syn-res-stale")
+    schema = service.get_schema(*args)
+    assert schema["schema_source"] == "inferred_from_file" and schema["row_count"] == 2
+    assert "stale flag" in schema["note"] and schema["source"]["access_method"] == "file_download"
+    out = service.query(*args, "SELECT sum(a) AS s FROM data")
+    assert out["rows"] == [[4]] and out["source"]["access_method"] == "file_download"
+    profile = service.profile_dataset(*args, compare_versions=False)
+    assert profile["rows"] == 2 and any("stale flag" in n for n in profile["notes"])
+
+
+def test_real_datastore_resource_is_still_used_when_it_exists(service):
+    out = service.get_schema("syn-regional-budget", "syn-res-budget-datastore")
+    assert out["schema_source"] == "datastore_metadata" and "stale" not in out["note"]
