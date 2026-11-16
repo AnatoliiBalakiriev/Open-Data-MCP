@@ -1,6 +1,6 @@
 [project]
 name = "open-data-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server and reference agent for answering questions about Ukrainian open data with provenance."
 readme = "README.md"
 requires-python = ">=3.11"

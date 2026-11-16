@@ -272,6 +272,16 @@ SQL is validated by AST, executed in an engine with external access disabled, an
 memory, rows and bytes. Tool errors never include response bodies, and secrets are only read from
 the environment (`.env` is git-ignored).
 
+## Changelog
+
+- **0.2.0** — new tool `profile_dataset` (data-quality passport: missing values, duplicates,
+  outliers, broken dates, encoding, schema drift; oversized files are profiled as a labelled
+  prefix). `get_schema`/`query`/`profile_dataset` fall back to the file when a resource's
+  `datastore_active` flag is stale. Formats typed as an extension (`.csv`, `*.xlsx`) are
+  recognised. Tool descriptions were rewritten in 0.1.x to say when to call each tool.
+- **0.1.0** — `search_datasets`, `get_schema`, `query`; provenance; reference agent; offline
+  evaluation.
+
 ## Roadmap
 
 1. Verify JSON resources live, test larger DataStore tables, and grow the real-data part
