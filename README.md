@@ -298,8 +298,9 @@ the environment (`.env` is git-ignored).
 
 ## Changelog
 
-- **Unreleased** — resource template `opendata://dataset/{dataset_id}/schema` and prompt
-  `data_quality_report(dataset_id)`; `src/open_data_mcp/dev.py` for `mcp dev`.
+- **0.3.0** — resource template `opendata://dataset/{dataset_id}/schema` and prompt
+  `data_quality_report(dataset_id)`, for clients without a free-form chat;
+  `src/open_data_mcp/dev.py` for `mcp dev` (MCP Inspector).
 - **0.2.0** — new tool `profile_dataset` (data-quality passport: missing values, duplicates,
   outliers, broken dates, encoding, schema drift; oversized files are profiled as a labelled
   prefix). `get_schema`/`query`/`profile_dataset` fall back to the file when a resource's
